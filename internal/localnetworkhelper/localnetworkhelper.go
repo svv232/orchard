@@ -159,13 +159,20 @@ func (localNetworkHelper *LocalNetworkHelper) PrivilegedDialContext(
 	if err := localNetworkHelper.err.Load(); err != nil {
 		return nil, *err
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	replyCh := make(chan dialReply, 1)
 
-	localNetworkHelper.requestsUnprocessed <- dialRequest{
+	select {
+	case localNetworkHelper.requestsUnprocessed <- dialRequest{
 		network: network,
 		addr:    addr,
 		replyCh: replyCh,
+	}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 
 	select {

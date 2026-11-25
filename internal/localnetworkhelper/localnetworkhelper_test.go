@@ -102,3 +102,23 @@ func TestPrivilegedDialCancellation(t *testing.T) {
 		t.Fatal("dial did not return after cancellation")
 	}
 }
+
+func TestPrivilegedDialCancellationBeforeHandoff(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	helper := &LocalNetworkHelper{requestsUnprocessed: make(chan dialRequest)}
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := helper.PrivilegedDialContext(ctx, "tcp", "127.0.0.1:1")
+		done <- err
+	}()
+
+	// No request consumer is running, as during a stalled helper.
+	cancel()
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(time.Second):
+		t.Fatal("dial is stuck handing off a request despite cancellation")
+	}
+}
