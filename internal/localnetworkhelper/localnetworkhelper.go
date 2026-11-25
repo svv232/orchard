@@ -219,6 +219,8 @@ func (localNetworkHelper *LocalNetworkHelper) handleRequests() {
 func (localNetworkHelper *LocalNetworkHelper) handleResponses() {
 	buf := make([]byte, responseBufferSize)
 	oob := make([]byte, responseBufferSize)
+	var pending []byte
+	var pendingOOB []byte
 
 	for {
 		n, oobn, _, _, err := localNetworkHelper.unixConn.ReadMsgUnix(buf, oob)
@@ -234,14 +236,19 @@ func (localNetworkHelper *LocalNetworkHelper) handleResponses() {
 			return
 		}
 
-		// Parse response(s)
-		decoder := json.NewDecoder(bytes.NewReader(buf[:n]))
+		// A stream read may end in the middle of a JSON response. Keep that
+		// response (and its ancillary data) until the remaining bytes arrive.
+		if len(pending) == 0 {
+			pendingOOB = append(pendingOOB[:0], oob[:oobn]...)
+		}
+		pending = append(pending, buf[:n]...)
 
-		for i := 0; ; i++ {
+		for len(pending) > 0 {
+			decoder := json.NewDecoder(bytes.NewReader(pending))
 			var privilegedSocketResponse socketResponse
 
 			if err := decoder.Decode(&privilegedSocketResponse); err != nil {
-				if errors.Is(err, io.EOF) {
+				if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 					break
 				}
 
@@ -251,6 +258,7 @@ func (localNetworkHelper *LocalNetworkHelper) handleResponses() {
 
 				return
 			}
+			pending = pending[decoder.InputOffset():]
 
 			processedRequest, ok := localNetworkHelper.requestsProcessed.LoadAndDelete(privilegedSocketResponse.Token)
 			if !ok {
@@ -273,9 +281,8 @@ func (localNetworkHelper *LocalNetworkHelper) handleResponses() {
 			// [2]: https://unix.stackexchange.com/questions/185011/what-happens-with-unix-stream-ancillary-data-on-partial-reads
 			var currentOOB []byte
 
-			if i == 0 {
-				currentOOB = oob[:oobn]
-			}
+			currentOOB = pendingOOB
+			pendingOOB = nil
 
 			netConn, err := handleResponse(privilegedSocketResponse, currentOOB)
 			processedRequest.replyCh <- dialReply{
